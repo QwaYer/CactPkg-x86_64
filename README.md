@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-GPLv3-blue.svg?style=for-the-badge" alt="License: GPLv3">
-  <img src="https://img.shields.io/badge/arch-i686-red.svg?style=for-the-badge" alt="Arch: i686">
+  <img src="https://img.shields.io/badge/arch-x86_64-red.svg?style=for-the-badge" alt="Arch: x86_64">
   <img src="https://img.shields.io/badge/language-C%2FPython-orange.svg?style=for-the-badge" alt="Language: C/Python">
   <img src="https://img.shields.io/badge/status-2.0.0-yellow.svg?style=for-the-badge" alt="Status: 2.0.0">
 </p>
@@ -33,7 +33,7 @@ refused.
 
 ## Building
 
-Requires built sibling trees of **CactLibc-x86_32** (`clibc.so`, `ld.so`,
+Requires built sibling trees of **CactLibc-x86_64** (`clibc.so`, `ld.so`,
 `start.o`) - auto-detected by default:
 
 ```sh
@@ -51,7 +51,7 @@ ninja -C build-meson stage       # bake cactpkg and repo/ into the LocalRepoCact
 The regular image build then packs them into `cctkfs.img`:
 
 ```sh
-ninja -C CactOS-x86_32/build-meson iso   # or: ninja -C LocalRepoCactOS-x86_32/build-meson stage
+ninja -C CactOS-x86_64/build-meson iso   # or: ninja -C LocalRepoCactOS-x86_64/build-meson stage
 ```
 
 Since the LocalRepo build gained a `cactpkg` step, the manager and its
@@ -79,8 +79,8 @@ it must serve an `index` and the `.cpkg` files it names. Plain `http://` is
 refused — an unauthenticated index or artifact would be a trivial MITM:
 
 ```
-cactpkg update -R https://packages.example.org/i686          # fetch the index over the network
-cactpkg install -R https://packages.example.org/i686 hello   # download and install a package
+cactpkg update -R https://packages.example.org/x86_64          # fetch the index over the network
+cactpkg install -R https://packages.example.org/x86_64 hello   # download and install a package
 ```
 
 Files are installed into the prefix (default `/usr/local`) and persist on
@@ -91,7 +91,7 @@ disk. Configuration: `/etc/cactpkg.conf` (`prefix`, `db`, `cache`, repeatable
 ## Layout
 
 ```
-CactPkg-x86_32/
+CactPkg-x86_64/
 ├── meson.build
 ├── docs/FORMAT.md      # formats: directory-package, .cpkg v1, index, db
 ├── include/cactpkg.h

@@ -2,8 +2,8 @@
 # CactPkg — Meson build system
 # ==============================================================================
 #
-#   meson setup build-meson --cross-file cross/i686-cact-clang.ini \
-#       -Dcactlib=../CactLibc-x86_32
+#   meson setup build-meson --cross-file cross/x86_64-cact-clang.ini \
+#       -Dcactlib=../CactLibc-x86_64
 #   ninja -C build-meson             # build-meson/cactpkg + build-meson/hello
 #   ninja -C build-meson stage       # payloads → offline repo → LocalRepo
 #   ninja -C build-meson repo        # only rebuild repo/ with tools/cpkg.py
@@ -80,7 +80,7 @@ pkg_lib = static_library('cactpkg',
 hello_lib = static_library('hello', 'examples/hello.c', c_args: c_args)
 
 _link_prefix = [
-  ld, '-m', 'elf_i386', '-pie', '--dynamic-linker=/lib/ld.so',
+  ld, '-m', 'elf_x86_64', '-pie', '--dynamic-linker=/lib/ld.so',
   '--hash-style=both', '-nostdlib', '--gc-sections',
   '-T', src_root / 'link.ld', '-o', '@OUTPUT@',
   start_o,
