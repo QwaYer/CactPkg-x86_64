@@ -20,7 +20,7 @@ ok()   { echo "  ok   $1"; }
 bad()  { echo "  FAIL $1"; fails=$((fails + 1)); }
 check() { if [ "$2" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got '$2' want '$3'"; fi; }
 
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; }
+cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; [ -n "${BSRV:-}" ] && kill "$BSRV" 2>/dev/null; }
 trap cleanup EXIT
 
 mkdir -p "$T/repo" "$T/webroot"
@@ -93,6 +93,24 @@ check "other path redirects"  "$(code "$H/anything")" 301
 curl -s -o /dev/null -w '%{redirect_url}' "$H/anything" | grep -q "https://pkg.test/anything" \
   && ok "redirect target" || bad "redirect target wrong"
 grep -q "Bad HTTP" "$T/server.log" && bad "stray request body on the wire" || ok "no stray-body misparse"
+
+echo "== bootstrap (certificate issued after the server starts) =="
+BPORT=18444
+BAPORT=18081
+BCERT="$T/late.crt"
+BKEY="$T/late.key"
+python3 "$SRC/tools/pkgserver.py" --repo "$T/repo" --host 127.0.0.1 \
+  --port "$BPORT" --cert "$BCERT" --key "$BKEY" --acme-port "$BAPORT" \
+  --acme-webroot "$T/webroot" --domain pkg.test >"$T/boot.log" 2>&1 &
+BSRV=$!
+sleep 1
+check "acme up (bootstrap)"      "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$BAPORT/.well-known/acme-challenge/tok123")" 200
+check "https refused pre-cert"   "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "https://127.0.0.1:$BPORT/index")" 000
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout "$BKEY" -out "$BCERT" \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1
+kill -HUP "$BSRV"; sleep 0.8
+check "https up after SIGHUP"    "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$BPORT/index")" 200
+kill "$BSRV" 2>/dev/null || true
 
 echo "== live certificate reload =="
 kill -HUP "$SRV"; sleep 0.5

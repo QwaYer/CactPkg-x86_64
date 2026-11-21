@@ -119,7 +119,8 @@ tools/pkgserver.py --repo repo --host 127.0.0.1 --port 8443 \
 - Publishing is off unless a token is configured (`--publish-token-file`, or
   `$CACTPKG_PUBLISH_TOKEN`), and an artifact is never overwritten unless
   `--allow-overwrite` is given.
-- `SIGHUP` reloads the certificate, so a renewal needs no restart.
+- `SIGHUP` (re)loads the certificate: it brings HTTPS up after the first
+  issuance and reloads it on every renewal, with no restart.
 
 On a CactOS machine the repository is then just another `repo` entry:
 
@@ -132,43 +133,51 @@ Run `tools/pkgserver-selftest.sh` to exercise the server locally.
 
 ### Certificates with Let's Encrypt
 
-The server can answer HTTP-01 challenges itself, so a certificate can be issued
-and renewed while the package service keeps running. Point the ACME listener at
-a webroot and run certbot against the same directory:
+The server answers HTTP-01 challenges itself, so the certificate can be issued
+and renewed while the package service keeps running — and it can start *before*
+the certificate exists: with no certificate it serves the ACME challenge on
+port 80 only, and the first `SIGHUP` brings HTTPS up. Before the first run the
+domain needs an **A record pointing at this host**, and port 80 must be
+reachable from the internet.
+
+On Artix Linux (dinit), install the tool, the service and the directories, then
+start it:
 
 ```sh
-tools/pkgserver.py --repo /srv/cactpkg/repo \
-    --cert /etc/letsencrypt/live/pkg.example.org/fullchain.pem \
-    --key /etc/letsencrypt/live/pkg.example.org/privkey.pem \
-    --domain pkg.example.org --acme-port 80 --acme-webroot /var/www/acme \
-    --publish-token-file /etc/cactpkg/publish.token
-
-certbot certonly --webroot -w /var/www/acme -d pkg.example.org \
-    --deploy-hook 'systemctl reload pkgserver'
+sudo pacman -S --needed certbot                      # certbot lives in 'galaxy'
+sudo install -m755 tools/pkgserver.py /usr/local/bin/pkgserver.py
+sudo install -Dm644 tools/pkgserver.dinit /etc/dinit.d/pkgserver   # edit paths first
+sudo mkdir -p /srv/cactpkg/repo /var/www/acme /etc/cactpkg
+sudo sh -c 'umask 077; head -c24 /dev/urandom | base64 > /etc/cactpkg/publish.token'
+sudo dinitctl enable pkgserver
 ```
+
+Then issue the certificate through the same webroot; the deploy hook both brings
+HTTPS up the first time and reloads it on every renewal:
+
+```sh
+sudo certbot certonly --webroot -w /var/www/acme -d pkg.example.org \
+    --deploy-hook 'dinitctl signal HUP pkgserver'
+```
+
+The service description (`tools/pkgserver.dinit`) is:
 
 ```ini
-# /etc/systemd/system/pkgserver.service
-[Unit]
-Description=CactPkg repository server
-After=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/pkgserver.py --repo /srv/cactpkg/repo \
-    --cert /etc/letsencrypt/live/pkg.example.org/fullchain.pem \
-    --key /etc/letsencrypt/live/pkg.example.org/privkey.pem \
-    --domain pkg.example.org --acme-port 80 --acme-webroot /var/www/acme \
-    --publish-token-file /etc/cactpkg/publish.token
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+type            = process
+command         = /usr/local/bin/pkgserver.py --repo /srv/cactpkg/repo ...
+smooth-recovery = true
+depends-on      = network.target
 ```
 
-Ports 80 and 443 need root (or `CAP_NET_BIND_SERVICE`). No client-side change is
-needed for a public certificate: a CactOS image trusts the host's CA bundle
-(Let's Encrypt included) as-is.
+On a systemd host the equivalent is an `ExecStart=` with the same arguments and
+`ExecReload=/bin/kill -HUP $MAINPID`. Ports 80 and 443 need root (or
+`CAP_NET_BIND_SERVICE`). No client-side change is needed for a public
+certificate: a CactOS image trusts the host's CA bundle (Let's Encrypt included)
+as-is.
+
+`--repo` can point at the image build's repository, but the build's `stage` step
+recreates `LocalRepoCactOS-*/lib/cactpkg/repo` wholesale, so a stable directory
+such as `/srv/cactpkg/repo` is the safer publish target.
 
 ## Layout
 
@@ -190,6 +199,7 @@ CactPkg-x86_64/
 ├── tools/cpkg.py       # host-side tool (build/index/sysrepo/extract/check/dump)
 ├── tools/pkgserver.py  # HTTPS repository server (serve + publish)
 ├── tools/pkgserver-selftest.sh  # localhost self-test for the server
+├── tools/pkgserver.dinit        # dinit service description (Artix)
 ├── examples/hello.c    # demo application for the first package
 ├── pkg/                # the personal package set (directory packages)
 │   ├── hello/          #   demo package

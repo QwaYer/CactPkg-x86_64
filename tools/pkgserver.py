@@ -413,7 +413,9 @@ def parse_args(argv):
                    help="repository directory (created if missing)")
     p.add_argument("--host", default="0.0.0.0", help="bind address")
     p.add_argument("--port", type=int, default=443, help="HTTPS port")
-    p.add_argument("--cert", help="TLS certificate (PEM)")
+    p.add_argument("--cert",
+                   help="TLS certificate (PEM); give both cert and key, or "
+                        "omit both to bootstrap a certificate with --acme-port")
     p.add_argument("--key", help="TLS private key (PEM)")
     p.add_argument("--acme-port", type=int, default=0,
                    help="plain-HTTP port for Let's Encrypt challenges "
@@ -446,20 +448,36 @@ def read_token(path):
     return os.environ.get("CACTPKG_PUBLISH_TOKEN", "").strip()
 
 
+def start_https(cfg, args):
+    """Bind and start the HTTPS listener; None (with a log) if it cannot."""
+    srv = None
+    try:
+        srv = PkgServer((args.host, args.port), PkgHandler, cfg)
+        srv.install_context()
+    except (OSError, ssl.SSLError) as e:
+        if srv is not None:
+            srv.server_close()
+        log.error("cannot serve https on %s:%d: %s", args.host, args.port, e)
+        return None
+    threading.Thread(target=srv.serve_forever, name="https",
+                     daemon=True).start()
+    log.info("https listening on %s:%d", args.host, srv.server_address[1])
+    return srv
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=getattr(logging, args.log_level),
                         format="%(asctime)s %(levelname)s %(message)s",
                         stream=sys.stderr)
 
-    if not args.cert or not args.key:
-        log.error("--cert and --key are required: cactpkg only talks to "
-                  "https://, so this server always terminates TLS")
+    if bool(args.cert) != bool(args.key):
+        log.error("--cert and --key go together")
         return 2
-    for path in (args.cert, args.key):
-        if not os.path.isfile(path):
-            log.error("%s: no such file", path)
-            return 2
+    if not args.cert and not args.acme_port:
+        log.error("nothing to serve: give --cert/--key, or --acme-port to "
+                  "bootstrap a certificate first")
+        return 2
 
     repo = os.path.abspath(args.repo)
     try:
@@ -479,8 +497,8 @@ def main(argv=None):
 
     cfg = Config()
     cfg.repo = repo
-    cfg.cert = os.path.abspath(args.cert)
-    cfg.key = os.path.abspath(args.key)
+    cfg.cert = os.path.abspath(args.cert) if args.cert else None
+    cfg.key = os.path.abspath(args.key) if args.key else None
     cfg.acme_webroot = os.path.abspath(args.acme_webroot) if args.acme_webroot else None
     cfg.domain = args.domain
     cfg.publish_token = token
@@ -495,23 +513,34 @@ def main(argv=None):
             return 2
         log.info("indexed %d package(s) in %s", n, repo)
 
-    try:
-        pkg_srv = PkgServer((args.host, args.port), PkgHandler, cfg)
-    except OSError as e:
-        log.error("cannot listen on %s:%d: %s", args.host, args.port, e)
-        return 1
-    pkg_srv.install_context()
-    servers = [pkg_srv]
+    # A certificate that does not exist yet is not fatal: start the ACME
+    # listener alone, and SIGHUP brings HTTPS up once certbot has issued one.
+    https = None
+    if cfg.cert and os.path.isfile(cfg.cert) and os.path.isfile(cfg.key):
+        https = start_https(cfg, args)
+    elif cfg.cert:
+        log.warning("no certificate at %s yet: serving ACME only; send SIGHUP "
+                    "once one is issued", cfg.cert)
 
+    acme = None
     if args.acme_port:
         try:
-            servers.append(_ThreadingServer((args.host, args.acme_port),
-                                            AcmeHandler, cfg))
+            acme = _ThreadingServer((args.host, args.acme_port),
+                                    AcmeHandler, cfg)
         except OSError as e:
-            log.error("cannot listen on %s:%d: %s",
-                      args.host, args.acme_port, e)
-            pkg_srv.server_close()
+            log.error("cannot listen on %s:%d: %s", args.host, args.acme_port, e)
+            if https is not None:
+                https.server_close()
             return 1
+        threading.Thread(target=acme.serve_forever, name="acme",
+                         daemon=True).start()
+        log.info("http (acme) listening on %s:%d", args.host,
+                 acme.server_address[1])
+
+    if https is None and acme is None:
+        log.error("nothing is being served: no usable certificate and no "
+                  "--acme-port")
+        return 1
 
     stop = threading.Event()
 
@@ -520,11 +549,19 @@ def main(argv=None):
         stop.set()
 
     def on_reload(_signum, _frame):
-        try:
-            pkg_srv.install_context()
-            log.info("reloaded the TLS certificate")
-        except Exception as e:
-            log.error("certificate reload failed: %s", e)
+        nonlocal https
+        if https is not None:
+            try:
+                https.install_context()
+                log.info("reloaded the TLS certificate")
+            except (OSError, ssl.SSLError) as e:
+                log.error("certificate reload failed: %s", e)
+            return
+        if not (cfg.cert and os.path.isfile(cfg.cert)
+                and os.path.isfile(cfg.key)):
+            log.info("no certificate yet; nothing to bring up")
+            return
+        https = start_https(cfg, args)
 
     signal.signal(signal.SIGTERM, on_stop)
     signal.signal(signal.SIGINT, on_stop)
@@ -534,23 +571,18 @@ def main(argv=None):
         with open(args.pidfile, "w", encoding="ascii") as f:
             f.write("%d\n" % os.getpid())
 
-    for srv in servers:
-        threading.Thread(target=srv.serve_forever,
-                         name="serve", daemon=True).start()
-    log.info("https listening on %s:%d", args.host, pkg_srv.server_address[1])
-    if args.acme_port:
-        log.info("http (acme) listening on %s:%d", args.host, args.acme_port)
-    log.info("repository %s, publishing %s", repo,
-             "enabled" if token else "disabled")
+    log.info("repository %s (publishing %s), https %s", repo,
+             "enabled" if token else "disabled",
+             "up" if https is not None else "pending a certificate")
 
     try:
         while not stop.is_set():
             stop.wait(3600)
     finally:
-        for srv in servers:
-            srv.shutdown()
-        for srv in servers:
-            srv.server_close()
+        for srv in (https, acme):
+            if srv is not None:
+                srv.shutdown()
+                srv.server_close()
         if args.pidfile:
             try:
                 os.unlink(args.pidfile)
