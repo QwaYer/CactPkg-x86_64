@@ -140,22 +140,27 @@ port 80 only, and the first `SIGHUP` brings HTTPS up. Before the first run the
 domain needs an **A record pointing at this host**, and port 80 must be
 reachable from the internet.
 
-On Artix Linux (dinit), install the tool, the service and the directories, then
-start it:
+On Artix Linux (dinit) the install is scripted and idempotent:
 
 ```sh
-sudo pacman -S --needed certbot                      # certbot lives in 'galaxy'
+sudo tools/pkgserver-deploy.sh --domain pkg.example.org --email you@example.org
+```
+
+It installs `pkgserver.py` and a stable repository directory, keeps or creates
+the publish token, writes and enables the dinit service, starts it, and — once
+the domain resolves — issues the certificate through the server's own ACME
+listener. Re-run it after adding the A record; the deploy hook reloads the
+certificate on every renewal, with no restart.
+
+The same steps by hand:
+
+```sh
+sudo pacman -Syu --needed certbot                    # certbot lives in 'galaxy'; -Syu avoids a partial upgrade
 sudo install -m755 tools/pkgserver.py /usr/local/bin/pkgserver.py
 sudo install -Dm644 tools/pkgserver.dinit /etc/dinit.d/pkgserver   # edit paths first
 sudo mkdir -p /srv/cactpkg/repo /var/www/acme /etc/cactpkg
 sudo sh -c 'umask 077; head -c24 /dev/urandom | base64 > /etc/cactpkg/publish.token'
 sudo dinitctl enable pkgserver
-```
-
-Then issue the certificate through the same webroot; the deploy hook both brings
-HTTPS up the first time and reloads it on every renewal:
-
-```sh
 sudo certbot certonly --webroot -w /var/www/acme -d pkg.example.org \
     --deploy-hook 'dinitctl signal HUP pkgserver'
 ```
@@ -199,6 +204,7 @@ CactPkg-x86_64/
 ├── tools/cpkg.py       # host-side tool (build/index/sysrepo/extract/check/dump)
 ├── tools/pkgserver.py  # HTTPS repository server (serve + publish)
 ├── tools/pkgserver-selftest.sh  # localhost self-test for the server
+├── tools/pkgserver-deploy.sh    # install + start on Artix/dinit (idempotent)
 ├── tools/pkgserver.dinit        # dinit service description (Artix)
 ├── examples/hello.c    # demo application for the first package
 ├── pkg/                # the personal package set (directory packages)
