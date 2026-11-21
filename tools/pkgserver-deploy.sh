@@ -21,6 +21,8 @@
 #   --bind ADDR        bind address                (default: 0.0.0.0)
 #   --behind-tunnel    serve plain HTTP on the loopback for a TLS-terminating
 #                      tunnel or reverse proxy in front (drops Let's Encrypt)
+#   --tailscale        implies --behind-tunnel: also install and start the
+#                      tailscaled service and, if logged in, funnel the port
 #   --local-port N     loopback port for --behind-tunnel   (default: 8443)
 #   --no-certbot       install and start; do not touch certificates
 #   --no-start         install files only; do not enable or (re)start the service
@@ -43,6 +45,7 @@ WEBROOT=/var/www/acme
 TOKEN_FILE=/etc/cactpkg/publish.token
 BIND=0.0.0.0
 TUNNEL=0
+TAILSCALE=0
 LPORT=8443
 DO_CERTBOT=1
 DO_START=1
@@ -62,6 +65,8 @@ Usage: sudo pkgserver-deploy.sh [options]
   --bind ADDR        bind address                (default: 0.0.0.0)
   --behind-tunnel    serve plain HTTP on the loopback for a TLS-terminating
                      tunnel or reverse proxy in front (drops Let's Encrypt)
+  --tailscale        implies --behind-tunnel: also install and start the
+                     tailscaled service and, if logged in, funnel the port
   --local-port N     loopback port for --behind-tunnel   (default: 8443)
   --no-certbot       install and start; do not touch certificates
   --no-start         install files only; do not enable or (re)start the service
@@ -88,6 +93,25 @@ sys.exit(0 if d.get("Status") == 0 and a else 1)' <<<"$r"
     fi
 }
 
+# Enable a dinit service at boot and (re)start it so the current unit file
+# takes effect.  unload cannot be used: the boot service waits for it.
+dinit_up() {
+    local svc=$1
+    if [ ! -e "$BOOTD/$svc" ]; then
+        dinitctl enable "$svc" >/dev/null
+        say "enabled $svc (starts at boot)"
+    fi
+    if dinitctl status "$svc" >/dev/null 2>&1; then
+        dinitctl reload "$svc" >/dev/null 2>&1 \
+            || say "note: reload of $svc failed, restarting instead"
+        dinitctl restart "$svc" >/dev/null 2>&1 || dinitctl start "$svc"
+    else
+        dinitctl start "$svc"
+    fi
+    say "$svc: $(dinitctl status "$svc" 2>&1 \
+        | grep -i '^ *State:' | sed 's/^ *//' || echo 'unknown state')"
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --domain)     DOMAIN=${2:?--domain needs a value}; shift 2 ;;
@@ -97,6 +121,7 @@ while [ $# -gt 0 ]; do
         --token-file) TOKEN_FILE=${2:?--token-file needs a value}; shift 2 ;;
         --bind)       BIND=${2:?--bind needs a value}; shift 2 ;;
         --behind-tunnel) TUNNEL=1; shift ;;
+        --tailscale)  TUNNEL=1; TAILSCALE=1; shift ;;
         --local-port) LPORT=${2:?--local-port needs a value}; shift 2 ;;
         --no-certbot) DO_CERTBOT=0; shift ;;
         --no-start)   DO_START=0; shift ;;
@@ -153,21 +178,32 @@ else
 fi
 
 if [ "$DO_START" -eq 1 ]; then
-    if [ ! -e "$BOOTD/$SERVICE" ]; then
-        dinitctl enable "$SERVICE" >/dev/null
-        say "enabled $SERVICE (starts at boot)"
-    fi
-    if dinitctl status "$SERVICE" >/dev/null 2>&1; then
-        # reload so a changed command takes effect; restart to apply it
-        dinitctl reload "$SERVICE" >/dev/null 2>&1 \
-            || say "note: reload failed, restarting instead"
-        dinitctl restart "$SERVICE" >/dev/null 2>&1 \
-            || dinitctl start "$SERVICE"
+    dinit_up "$SERVICE"
+fi
+
+if [ "$TAILSCALE" -eq 1 ]; then
+    if ! command -v tailscale >/dev/null 2>&1; then
+        say "tailscale not installed:  sudo pacman -Syu --needed tailscale"
+        say "then re-run this script with --tailscale"
+    elif [ ! -f "$SRC/tools/tailscaled.dinit" ]; then
+        say "missing $SRC/tools/tailscaled.dinit"
     else
-        dinitctl start "$SERVICE"
+        mkdir -p /var/lib/tailscale /run/tailscale
+        modprobe tun 2>/dev/null || true
+        install -m644 "$SRC/tools/tailscaled.dinit" /etc/dinit.d/tailscaled
+        if [ "$DO_START" -eq 1 ]; then
+            dinit_up tailscaled
+        fi
+        if tailscale status >/dev/null 2>&1; then
+            tailscale funnel --bg --yes "$LPORT"
+            say "funnel:"
+            tailscale funnel status 2>&1 | sed 's/^/    /'
+        else
+            say "tailscale is not logged in yet; run these once:"
+            say "    sudo tailscale up"
+            say "    sudo tailscale funnel --bg $LPORT"
+        fi
     fi
-    say "service: $(dinitctl status "$SERVICE" 2>&1 \
-        | grep -i '^ *State:' | sed 's/^ *//' || echo 'unknown state')"
 fi
 
 if [ "$TUNNEL" -eq 1 ]; then
@@ -200,10 +236,13 @@ fi
 echo
 if [ "$TUNNEL" -eq 1 ]; then
     say "local hub   http://127.0.0.1:$LPORT"
-    say "expose it   point a TLS-terminating tunnel at that port, e.g."
-    say "              ssh -R 80:localhost:$LPORT nokey@localhost.run     (free, no signup)"
-    say "              tailscale funnel --bg --https=443 http://127.0.0.1:$LPORT"
-    say "repository  the https:// URL the tunnel prints"
+    if [ "$TAILSCALE" -eq 1 ]; then
+        say "public URL  https://<node>.<tailnet>.ts.net   (see: tailscale funnel status)"
+    else
+        say "expose it   point a TLS-terminating tunnel at that port, e.g."
+        say "              ssh -R 80:localhost:$LPORT nokey@localhost.run   (free, no signup)"
+        say "              sudo tailscale funnel --bg $LPORT                (stable URL)"
+    fi
     say "publish     curl -T <file>.cpkg -H \"Authorization: Bearer <token from $TOKEN_FILE>\" https://<tunnel-host>/publish/<file>.cpkg"
     say "client      cactpkg update -R https://<tunnel-host>"
 else

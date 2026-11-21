@@ -1,0 +1,18 @@
+# Tailscale daemon (Artix Linux / dinit).
+#
+# The `tailscale` package ships no service description, so this one lives in
+# the CactPkg repository:
+#
+#   sudo install -m644 tools/tailscaled.dinit /etc/dinit.d/tailscaled
+#   sudo dinitctl enable tailscaled && sudo dinitctl start tailscaled
+#   sudo tailscale up                      # one-time interactive login
+#   sudo tailscale funnel --bg 8443        # publish 127.0.0.1:8443 to the internet
+#
+# tailscaled needs /dev/net/tun (the kernel autoloads the `tun` module on open).
+# `tools/pkgserver-deploy.sh --tailscale` installs and starts this for you.
+
+type            = process
+command         = /usr/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
+smooth-recovery = true
+depends-on      = network.target
+depends-on      = local.target

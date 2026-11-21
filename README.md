@@ -204,6 +204,25 @@ is given, and cannot be combined with `--cert`/`--key`. The tunnel terminates
 TLS, so it can see the traffic: packages are public, and the publish token is
 only as private as the tunnel.
 
+#### Tailscale Funnel (stable URL, no domain needed)
+
+A free Tailscale account gives a stable `https://<node>.<tailnet>.ts.net` name
+and a valid certificate — no inbound ports, no domain:
+
+```sh
+sudo pacman -Syu --needed tailscale
+sudo tools/pkgserver-deploy.sh --tailscale     # server + tailscaled + funnel
+sudo tailscale up                              # one-time interactive login
+sudo tailscale funnel --bg 8443                # if the script could not do it yet
+tailscale funnel status                        # prints the public URL
+```
+
+`--tailscale` implies `--behind-tunnel`, installs the `tailscaled` dinit unit
+(this repo ships `tools/tailscaled.dinit` — the tailscale package has none),
+starts it, and funnels the loopback port once you are logged in. Funnelling may
+need to be enabled once for the tailnet in the Tailscale admin console;
+`tailscale funnel` prints the link if so.
+
 `--repo` can point at the image build's repository, but the build's `stage` step
 recreates `LocalRepoCactOS-*/lib/cactpkg/repo` wholesale, so a stable directory
 such as `/srv/cactpkg/repo` is the safer publish target.
@@ -230,6 +249,7 @@ CactPkg-x86_64/
 ├── tools/pkgserver-selftest.sh  # localhost self-test for the server
 ├── tools/pkgserver-deploy.sh    # install + start on Artix/dinit (idempotent)
 ├── tools/pkgserver.dinit        # dinit service description (Artix)
+├── tools/tailscaled.dinit       # dinit service for the Tailscale daemon
 ├── examples/hello.c    # demo application for the first package
 ├── pkg/                # the personal package set (directory packages)
 │   ├── hello/          #   demo package
