@@ -20,7 +20,7 @@ ok()   { echo "  ok   $1"; }
 bad()  { echo "  FAIL $1"; fails=$((fails + 1)); }
 check() { if [ "$2" = "$3" ]; then ok "$1 ($2)"; else bad "$1: got '$2' want '$3'"; fi; }
 
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null; [ -n "${BSRV:-}" ] && kill "$BSRV" 2>/dev/null; }
+cleanup() { for p in "${SRV:-}" "${BSRV:-}" "${HSRV:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; }
 trap cleanup EXIT
 
 mkdir -p "$T/repo" "$T/webroot"
@@ -111,6 +111,24 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout "$BKEY" -out "$BCERT" 
 kill -HUP "$BSRV"; sleep 0.8
 check "https up after SIGHUP"    "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$BPORT/index")" 200
 kill "$BSRV" 2>/dev/null || true
+
+echo "== plain http (behind a TLS terminator) =="
+HPORT=18445
+python3 "$SRC/tools/pkgserver.py" --repo "$T/repo" --http --port "$HPORT" \
+  --publish-token-file "$T/token" >"$T/http.log" 2>&1 &
+HSRV=$!
+for _ in $(seq 1 40); do
+  curl -s -o /dev/null "http://127.0.0.1:$HPORT/index" && break
+  sleep 0.25
+done
+H="http://127.0.0.1:$HPORT"
+check "plain GET /index"      "$(curl -s -o /dev/null -w '%{http_code}' "$H/index")" 200
+check "plain GET artifact"    "$(curl -s -o /dev/null -w '%{http_code}' "$H/hello-2.0.0.cpkg")" 200
+check "plain PUT no token"    "$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary @"$T/demo-1.0.0.cpkg" "$H/publish/demo-1.0.0.cpkg")" 401
+check "plain defaults loopback" "$(ss -tlnH 2>/dev/null | grep -c "127.0.0.1:$HPORT")" 1
+check "plain not on 0.0.0.0"  "$(ss -tlnH 2>/dev/null | grep -c "0.0.0.0:$HPORT")" 0
+check "--http rejects --cert" "$(python3 "$SRC/tools/pkgserver.py" --repo "$T/repo" --http --cert /nope --key /nope >/dev/null 2>&1; echo $?)" 2
+kill "$HSRV" 2>/dev/null || true
 
 echo "== live certificate reload =="
 kill -HUP "$SRV"; sleep 0.5

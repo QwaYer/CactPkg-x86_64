@@ -17,14 +17,21 @@ itself (certificate + key files).  A second, optional plain-HTTP listener can
 answer Let's Encrypt HTTP-01 challenges on port 80 while the package service
 keeps running, so a certificate can be issued and renewed without downtime.
 
+When the host is behind NAT and cannot accept inbound connections, put a
+TLS-terminating tunnel or reverse proxy in front instead: with --http the
+server speaks plain HTTP (loopback by default) and the public URL stays https,
+so cactpkg is still happy.
+
 The .cpkg format lives in tools/cpkg.py, which this imports — one authority
 for the format, not a second reader that can drift.
 
 Usage:
   pkgserver.py --repo DIR --cert cert.pem --key key.pem [options]
+  pkgserver.py --repo DIR --http [options]        (behind a TLS terminator)
 
-Options (see --help): --host, --port, --acme-port, --acme-webroot, --domain,
---publish-token-file, --max-upload, --allow-overwrite, --reindex, --pidfile.
+Options (see --help): --host, --port, --http, --acme-port, --acme-webroot,
+--domain, --publish-token-file, --max-upload, --allow-overwrite, --reindex,
+--pidfile.
 """
 
 import argparse
@@ -411,8 +418,14 @@ def parse_args(argv):
         description="HTTPS repository server for CactPkg.")
     p.add_argument("--repo", required=True,
                    help="repository directory (created if missing)")
-    p.add_argument("--host", default="0.0.0.0", help="bind address")
+    p.add_argument("--host",
+                   help="bind address (default 0.0.0.0, or 127.0.0.1 with "
+                        "--http)")
     p.add_argument("--port", type=int, default=443, help="HTTPS port")
+    p.add_argument("--http", action="store_true",
+                   help="serve plain HTTP, for a TLS-terminating tunnel or "
+                        "reverse proxy in front (binds loopback unless "
+                        "--host is given); incompatible with --cert/--key")
     p.add_argument("--cert",
                    help="TLS certificate (PEM); give both cert and key, or "
                         "omit both to bootstrap a certificate with --acme-port")
@@ -448,20 +461,24 @@ def read_token(path):
     return os.environ.get("CACTPKG_PUBLISH_TOKEN", "").strip()
 
 
-def start_https(cfg, args):
-    """Bind and start the HTTPS listener; None (with a log) if it cannot."""
+def start_listener(cfg, host, port, tls):
+    """Bind and start the package listener; None (with a log) if it cannot."""
     srv = None
     try:
-        srv = PkgServer((args.host, args.port), PkgHandler, cfg)
-        srv.install_context()
+        if tls:
+            srv = PkgServer((host, port), PkgHandler, cfg)
+            srv.install_context()
+        else:
+            srv = _ThreadingServer((host, port), PkgHandler, cfg)
     except (OSError, ssl.SSLError) as e:
         if srv is not None:
             srv.server_close()
-        log.error("cannot serve https on %s:%d: %s", args.host, args.port, e)
+        log.error("cannot serve on %s:%d: %s", host, port, e)
         return None
-    threading.Thread(target=srv.serve_forever, name="https",
+    threading.Thread(target=srv.serve_forever, name="pkg",
                      daemon=True).start()
-    log.info("https listening on %s:%d", args.host, srv.server_address[1])
+    log.info("%s listening on %s:%d", "https" if tls else "http",
+             host, srv.server_address[1])
     return srv
 
 
@@ -471,13 +488,22 @@ def main(argv=None):
                         format="%(asctime)s %(levelname)s %(message)s",
                         stream=sys.stderr)
 
+    if args.http and (args.cert or args.key):
+        log.error("--http serves plain HTTP; TLS is ended by the tunnel or "
+                  "proxy in front, so do not give --cert/--key")
+        return 2
     if bool(args.cert) != bool(args.key):
         log.error("--cert and --key go together")
         return 2
-    if not args.cert and not args.acme_port:
-        log.error("nothing to serve: give --cert/--key, or --acme-port to "
-                  "bootstrap a certificate first")
+    if not args.http and not args.cert and not args.acme_port:
+        log.error("nothing to serve: give --http, or --cert/--key, or "
+                  "--acme-port to bootstrap a certificate first")
         return 2
+
+    # Plain HTTP is only ever a hop to a local terminator, so default it to
+    # loopback; the ACME challenge listener stays public.
+    host = args.host or ("127.0.0.1" if args.http else "0.0.0.0")
+    acme_host = args.host or "0.0.0.0"
 
     repo = os.path.abspath(args.repo)
     try:
@@ -497,6 +523,7 @@ def main(argv=None):
 
     cfg = Config()
     cfg.repo = repo
+    cfg.tls = not args.http
     cfg.cert = os.path.abspath(args.cert) if args.cert else None
     cfg.key = os.path.abspath(args.key) if args.key else None
     cfg.acme_webroot = os.path.abspath(args.acme_webroot) if args.acme_webroot else None
@@ -515,9 +542,11 @@ def main(argv=None):
 
     # A certificate that does not exist yet is not fatal: start the ACME
     # listener alone, and SIGHUP brings HTTPS up once certbot has issued one.
-    https = None
-    if cfg.cert and os.path.isfile(cfg.cert) and os.path.isfile(cfg.key):
-        https = start_https(cfg, args)
+    pkg = None
+    if not cfg.tls:
+        pkg = start_listener(cfg, host, args.port, tls=False)
+    elif cfg.cert and os.path.isfile(cfg.cert) and os.path.isfile(cfg.key):
+        pkg = start_listener(cfg, host, args.port, tls=True)
     elif cfg.cert:
         log.warning("no certificate at %s yet: serving ACME only; send SIGHUP "
                     "once one is issued", cfg.cert)
@@ -525,19 +554,19 @@ def main(argv=None):
     acme = None
     if args.acme_port:
         try:
-            acme = _ThreadingServer((args.host, args.acme_port),
+            acme = _ThreadingServer((acme_host, args.acme_port),
                                     AcmeHandler, cfg)
         except OSError as e:
-            log.error("cannot listen on %s:%d: %s", args.host, args.acme_port, e)
-            if https is not None:
-                https.server_close()
+            log.error("cannot listen on %s:%d: %s", acme_host, args.acme_port, e)
+            if pkg is not None:
+                pkg.server_close()
             return 1
         threading.Thread(target=acme.serve_forever, name="acme",
                          daemon=True).start()
-        log.info("http (acme) listening on %s:%d", args.host,
+        log.info("http (acme) listening on %s:%d", acme_host,
                  acme.server_address[1])
 
-    if https is None and acme is None:
+    if pkg is None and acme is None:
         log.error("nothing is being served: no usable certificate and no "
                   "--acme-port")
         return 1
@@ -549,10 +578,14 @@ def main(argv=None):
         stop.set()
 
     def on_reload(_signum, _frame):
-        nonlocal https
-        if https is not None:
+        nonlocal pkg
+        if not cfg.tls:
+            log.info("plain-http mode: the tunnel or proxy owns the "
+                     "certificate, nothing to reload")
+            return
+        if pkg is not None:
             try:
-                https.install_context()
+                pkg.install_context()
                 log.info("reloaded the TLS certificate")
             except (OSError, ssl.SSLError) as e:
                 log.error("certificate reload failed: %s", e)
@@ -561,7 +594,7 @@ def main(argv=None):
                 and os.path.isfile(cfg.key)):
             log.info("no certificate yet; nothing to bring up")
             return
-        https = start_https(cfg, args)
+        pkg = start_listener(cfg, host, args.port, tls=True)
 
     signal.signal(signal.SIGTERM, on_stop)
     signal.signal(signal.SIGINT, on_stop)
@@ -571,15 +604,16 @@ def main(argv=None):
         with open(args.pidfile, "w", encoding="ascii") as f:
             f.write("%d\n" % os.getpid())
 
-    log.info("repository %s (publishing %s), https %s", repo,
+    log.info("repository %s (publishing %s), %s %s", repo,
              "enabled" if token else "disabled",
-             "up" if https is not None else "pending a certificate")
+             "https" if cfg.tls else "http (plain)",
+             "up" if pkg is not None else "pending a certificate")
 
     try:
         while not stop.is_set():
             stop.wait(3600)
     finally:
-        for srv in (https, acme):
+        for srv in (pkg, acme):
             if srv is not None:
                 srv.shutdown()
                 srv.server_close()

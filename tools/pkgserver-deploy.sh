@@ -19,6 +19,9 @@
 #   --webroot DIR      ACME webroot                (default: /var/www/acme)
 #   --token-file FILE  publish bearer token        (default: /etc/cactpkg/publish.token)
 #   --bind ADDR        bind address                (default: 0.0.0.0)
+#   --behind-tunnel    serve plain HTTP on the loopback for a TLS-terminating
+#                      tunnel or reverse proxy in front (drops Let's Encrypt)
+#   --local-port N     loopback port for --behind-tunnel   (default: 8443)
 #   --no-certbot       install and start; do not touch certificates
 #   --no-start         install files only; do not enable or (re)start the service
 #   -h, --help         show this help
@@ -39,6 +42,8 @@ REPO=/srv/cactpkg/repo
 WEBROOT=/var/www/acme
 TOKEN_FILE=/etc/cactpkg/publish.token
 BIND=0.0.0.0
+TUNNEL=0
+LPORT=8443
 DO_CERTBOT=1
 DO_START=1
 
@@ -55,6 +60,9 @@ Usage: sudo pkgserver-deploy.sh [options]
   --webroot DIR      ACME webroot                (default: /var/www/acme)
   --token-file FILE  publish bearer token        (default: /etc/cactpkg/publish.token)
   --bind ADDR        bind address                (default: 0.0.0.0)
+  --behind-tunnel    serve plain HTTP on the loopback for a TLS-terminating
+                     tunnel or reverse proxy in front (drops Let's Encrypt)
+  --local-port N     loopback port for --behind-tunnel   (default: 8443)
   --no-certbot       install and start; do not touch certificates
   --no-start         install files only; do not enable or (re)start the service
   -h, --help         show this help
@@ -88,6 +96,8 @@ while [ $# -gt 0 ]; do
         --webroot)    WEBROOT=${2:?--webroot needs a value}; shift 2 ;;
         --token-file) TOKEN_FILE=${2:?--token-file needs a value}; shift 2 ;;
         --bind)       BIND=${2:?--bind needs a value}; shift 2 ;;
+        --behind-tunnel) TUNNEL=1; shift ;;
+        --local-port) LPORT=${2:?--local-port needs a value}; shift 2 ;;
         --no-certbot) DO_CERTBOT=0; shift ;;
         --no-start)   DO_START=0; shift ;;
         -h|--help)    usage; exit 0 ;;
@@ -100,7 +110,11 @@ done
 command -v dinitctl >/dev/null 2>&1 || die "dinitctl not found; this script targets dinit systems"
 
 echo "pkgserver deploy"
-say "domain   $DOMAIN"
+if [ "$TUNNEL" -eq 1 ]; then
+    say "mode     behind a tunnel (plain HTTP on 127.0.0.1:$LPORT)"
+else
+    say "domain   $DOMAIN"
+fi
 say "repo     $REPO"
 say "webroot  $WEBROOT"
 
@@ -118,10 +132,15 @@ fi
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
+if [ "$TUNNEL" -eq 1 ]; then
+    cmdline="$BIN --repo $REPO --http --port $LPORT --publish-token-file $TOKEN_FILE"
+else
+    cmdline="$BIN --repo $REPO --cert /etc/letsencrypt/live/$DOMAIN/fullchain.pem --key /etc/letsencrypt/live/$DOMAIN/privkey.pem --domain $DOMAIN --host $BIND --acme-port 80 --acme-webroot $WEBROOT --publish-token-file $TOKEN_FILE"
+fi
 cat > "$tmp" <<EOF
 # CactPkg repository server (written by tools/pkgserver-deploy.sh).
 type            = process
-command         = $BIN --repo $REPO --cert /etc/letsencrypt/live/$DOMAIN/fullchain.pem --key /etc/letsencrypt/live/$DOMAIN/privkey.pem --domain $DOMAIN --host $BIND --acme-port 80 --acme-webroot $WEBROOT --publish-token-file $TOKEN_FILE
+command         = $cmdline
 smooth-recovery = true
 depends-on      = network.target
 depends-on      = local.target
@@ -151,7 +170,10 @@ if [ "$DO_START" -eq 1 ]; then
         | grep -i '^ *State:' | sed 's/^ *//' || echo 'unknown state')"
 fi
 
-if [ "$DO_CERTBOT" -eq 0 ]; then
+if [ "$TUNNEL" -eq 1 ]; then
+    say "certificate: none on this hop (--behind-tunnel); the tunnel or proxy"
+    say "             terminates TLS, so the public URL must be https"
+elif [ "$DO_CERTBOT" -eq 0 ]; then
     say "certificate: skipped (--no-certbot)"
 elif [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
     say "certificate for $DOMAIN already present"
@@ -176,9 +198,19 @@ else
 fi
 
 echo
-say "repository  https://$DOMAIN"
-say "publish     curl -T <file>.cpkg -H \"Authorization: Bearer <token from $TOKEN_FILE>\" https://$DOMAIN/publish/<file>.cpkg"
-say "client      cactpkg update -R https://$DOMAIN"
+if [ "$TUNNEL" -eq 1 ]; then
+    say "local hub   http://127.0.0.1:$LPORT"
+    say "expose it   point a TLS-terminating tunnel at that port, e.g."
+    say "              ssh -R 80:localhost:$LPORT nokey@localhost.run     (free, no signup)"
+    say "              tailscale funnel --bg --https=443 http://127.0.0.1:$LPORT"
+    say "repository  the https:// URL the tunnel prints"
+    say "publish     curl -T <file>.cpkg -H \"Authorization: Bearer <token from $TOKEN_FILE>\" https://<tunnel-host>/publish/<file>.cpkg"
+    say "client      cactpkg update -R https://<tunnel-host>"
+else
+    say "repository  https://$DOMAIN"
+    say "publish     curl -T <file>.cpkg -H \"Authorization: Bearer <token from $TOKEN_FILE>\" https://$DOMAIN/publish/<file>.cpkg"
+    say "client      cactpkg update -R https://$DOMAIN"
+fi
 if [ "$DO_START" -eq 1 ] && ! dinitctl is-started --quiet "$SERVICE" >/dev/null 2>&1; then
     say "note: $SERVICE is not running; see  dinitctl status $SERVICE"
 fi

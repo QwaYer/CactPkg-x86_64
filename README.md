@@ -180,6 +180,30 @@ On a systemd host the equivalent is an `ExecStart=` with the same arguments and
 certificate: a CactOS image trusts the host's CA bundle (Let's Encrypt included)
 as-is.
 
+### Behind NAT (no inbound ports)
+
+If the host cannot accept inbound connections — behind NAT with no port
+forwarding — put a **TLS-terminating tunnel** in front and let the server speak
+plain HTTP on the loopback. The public URL is still `https`, so `cactpkg` is
+happy, and no certificate is needed on this hop:
+
+```sh
+# loopback-only plain HTTP for the tunnel to reach
+tools/pkgserver.py --repo /srv/cactpkg/repo --http --port 8443 \
+    --publish-token-file /etc/cactpkg/publish.token
+
+# a free tunnel that terminates TLS and prints a public https:// URL:
+ssh -R 80:localhost:8443 nokey@localhost.run     # https://<name>.lhr.life — random each run
+# or, with a free Tailscale account, a stable name and a valid certificate:
+tailscale funnel --bg --https=443 http://127.0.0.1:8443   # https://<node>.<tailnet>.ts.net
+```
+
+`sudo tools/pkgserver-deploy.sh --behind-tunnel` installs and starts that
+loopback-only configuration for you. `--http` binds `127.0.0.1` unless `--host`
+is given, and cannot be combined with `--cert`/`--key`. The tunnel terminates
+TLS, so it can see the traffic: packages are public, and the publish token is
+only as private as the tunnel.
+
 `--repo` can point at the image build's repository, but the build's `stage` step
 recreates `LocalRepoCactOS-*/lib/cactpkg/repo` wholesale, so a stable directory
 such as `/srv/cactpkg/repo` is the safer publish target.
