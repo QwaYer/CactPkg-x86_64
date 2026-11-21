@@ -166,9 +166,9 @@ fi
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 if [ "$TUNNEL" -eq 1 ]; then
-    cmdline="$BIN --repo $REPO --http --port $LPORT --publish-token-file $TOKEN_FILE"
+    cmdline="$BIN --repo $REPO --http --port $LPORT --reindex --publish-token-file $TOKEN_FILE"
 else
-    cmdline="$BIN --repo $REPO --cert /etc/letsencrypt/live/$DOMAIN/fullchain.pem --key /etc/letsencrypt/live/$DOMAIN/privkey.pem --domain $DOMAIN --host $BIND --acme-port 80 --acme-webroot $WEBROOT --publish-token-file $TOKEN_FILE"
+    cmdline="$BIN --repo $REPO --cert /etc/letsencrypt/live/$DOMAIN/fullchain.pem --key /etc/letsencrypt/live/$DOMAIN/privkey.pem --domain $DOMAIN --host $BIND --acme-port 80 --acme-webroot $WEBROOT --reindex --publish-token-file $TOKEN_FILE"
 fi
 cat > "$tmp" <<EOF
 # CactPkg repository server (written by tools/pkgserver-deploy.sh).
