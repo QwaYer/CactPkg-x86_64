@@ -169,3 +169,35 @@ directory is created on the first install.
 
 Global flags: `-y`, `-f/--force`, `-R/--repo <dir|url>`,
 `--prefix <dir>`, `--cache <dir>`, `-C/--conf <file>`, `-q`.
+
+---
+
+## 7. Repository server (`tools/pkgserver.py`)
+
+`tools/pkgserver.py` publishes a repository (§3) over HTTPS. The repository
+root is served directly:
+
+| Request                    | Answer                                              |
+|----------------------------|-----------------------------------------------------|
+| `GET /`                    | HTML listing of the packages                        |
+| `GET /index`               | the index (`text/plain`)                            |
+| `GET /<file>.cpkg`         | the artifact (`application/octet-stream`)           |
+| `PUT /publish/<file>.cpkg` | publish a `.cpkg` (body); validated, stored, index rebuilt — `201` |
+| `HEAD` on a `GET` route    | the same headers, no body                           |
+
+Publishing is authenticated with a bearer token and is refused (`403`) unless a
+token is configured:
+
+```
+PUT /publish/hello-2.0.0.cpkg HTTP/1.1
+Authorization: Bearer <token>
+Content-Length: <n>
+
+<raw .cpkg bytes>
+```
+
+Both sides of the wire are strict: the name must be `<name>-<version>.cpkg`
+with no `/` and no `..`, the body must parse as a v1 `.cpkg` (§2), and an
+existing artifact is not replaced unless the server runs with
+`--allow-overwrite`. Only `https://` is served, because `cactpkg` refuses
+plain HTTP (§3).
