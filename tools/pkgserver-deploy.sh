@@ -33,7 +33,9 @@ set -euo pipefail
 SERVICE=pkgserver
 UNIT=/etc/dinit.d/pkgserver
 BOOTD=/etc/dinit.d/boot.d
-BIN=/usr/local/bin/pkgserver.py
+LIB=/usr/local/lib/cactpkg
+BIN=$LIB/pkgserver.py
+STALE_BIN=/usr/local/bin/pkgserver.py
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=$(cd "$HERE/.." && pwd)
@@ -145,8 +147,14 @@ say "webroot  $WEBROOT"
 
 mkdir -p "$(dirname "$BIN")" "$(dirname "$UNIT")" "$REPO" "$WEBROOT" \
     "$(dirname "$TOKEN_FILE")"
+# pkgserver.py imports cpkg (the format authority), so install it beside.
 install -m755 "$SRC/tools/pkgserver.py" "$BIN"
-say "installed $BIN"
+install -m644 "$SRC/tools/cpkg.py" "$LIB/cpkg.py"
+say "installed $LIB/pkgserver.py + cpkg.py"
+if [ -f "$STALE_BIN" ]; then
+    rm -f "$STALE_BIN"
+    say "removed stale $STALE_BIN"
+fi
 
 if [ -s "$TOKEN_FILE" ]; then
     say "kept existing publish token $TOKEN_FILE"
@@ -179,6 +187,15 @@ fi
 
 if [ "$DO_START" -eq 1 ]; then
     dinit_up "$SERVICE"
+    # "STARTED" only means the process was spawned; make sure it answers.
+    if [ "$TUNNEL" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+        if curl -sf -m 5 -o /dev/null "http://127.0.0.1:$LPORT/"; then
+            say "health check: http://127.0.0.1:$LPORT/ answers"
+        else
+            say "WARNING: $SERVICE is not answering on http://127.0.0.1:$LPORT"
+            say "         check:  sudo dinitctl catlog $SERVICE"
+        fi
+    fi
 fi
 
 if [ "$TAILSCALE" -eq 1 ]; then

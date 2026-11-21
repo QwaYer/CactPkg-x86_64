@@ -1,7 +1,11 @@
 # CactPkg repository server — dinit service (Artix Linux).
 #
+#   sudo install -Dm755 tools/pkgserver.py /usr/local/lib/cactpkg/pkgserver.py
+#   sudo install -Dm644 tools/cpkg.py     /usr/local/lib/cactpkg/cpkg.py
 #   sudo install -m644 tools/pkgserver.dinit /etc/dinit.d/pkgserver
 #   sudo dinitctl enable pkgserver
+#
+# pkgserver imports cpkg, so both files go in the same directory.
 #
 # The certificate paths may not exist yet: the service then serves the ACME
 # challenge on port 80 only, and certbot's deploy hook
@@ -12,7 +16,7 @@
 # Edit the paths and the domain for the host before installing.
 
 type            = process
-command         = /usr/local/bin/pkgserver.py --repo /srv/cactpkg/repo --cert /etc/letsencrypt/live/pkg.example.org/fullchain.pem --key /etc/letsencrypt/live/pkg.example.org/privkey.pem --domain pkg.example.org --acme-port 80 --acme-webroot /var/www/acme --publish-token-file /etc/cactpkg/publish.token
+command         = /usr/local/lib/cactpkg/pkgserver.py --repo /srv/cactpkg/repo --cert /etc/letsencrypt/live/pkg.example.org/fullchain.pem --key /etc/letsencrypt/live/pkg.example.org/privkey.pem --domain pkg.example.org --acme-port 80 --acme-webroot /var/www/acme --publish-token-file /etc/cactpkg/publish.token
 smooth-recovery = true
 depends-on      = network.target
 depends-on      = local.target

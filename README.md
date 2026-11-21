@@ -156,8 +156,9 @@ The same steps by hand:
 
 ```sh
 sudo pacman -Syu --needed certbot                    # certbot lives in 'galaxy'; -Syu avoids a partial upgrade
-sudo install -m755 tools/pkgserver.py /usr/local/bin/pkgserver.py
-sudo install -Dm644 tools/pkgserver.dinit /etc/dinit.d/pkgserver   # edit paths first
+sudo install -Dm755 tools/pkgserver.py /usr/local/lib/cactpkg/pkgserver.py
+sudo install -Dm644 tools/cpkg.py     /usr/local/lib/cactpkg/cpkg.py   # pkgserver imports cpkg
+sudo install -Dm644 tools/pkgserver.dinit /etc/dinit.d/pkgserver       # edit paths first
 sudo mkdir -p /srv/cactpkg/repo /var/www/acme /etc/cactpkg
 sudo sh -c 'umask 077; head -c24 /dev/urandom | base64 > /etc/cactpkg/publish.token'
 sudo dinitctl enable pkgserver
@@ -169,7 +170,7 @@ The service description (`tools/pkgserver.dinit`) is:
 
 ```ini
 type            = process
-command         = /usr/local/bin/pkgserver.py --repo /srv/cactpkg/repo ...
+command         = /usr/local/lib/cactpkg/pkgserver.py --repo /srv/cactpkg/repo ...
 smooth-recovery = true
 depends-on      = network.target
 ```
