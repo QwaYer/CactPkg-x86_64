@@ -50,7 +50,7 @@ ninja -C build-meson stage       # bake cactpkg and repo/ into the LocalRepoCact
 - `/usr/sbin/cactpkg` - the manager,
 - `/usr/lib/cactpkg/repo/{*.cpkg,index}` - the personal offline repository.
 
-The regular image build then packs them into `cctkfs.img`:
+The regular image build then packs them into `localbinrepo.img`:
 
 ```sh
 ninja -C CactOS-x86_64/build-meson iso   # or: ninja -C LocalRepoCactOS-x86_64/build-meson stage
